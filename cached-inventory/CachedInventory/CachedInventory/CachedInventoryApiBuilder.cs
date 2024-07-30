@@ -14,6 +14,13 @@ public static class CachedInventoryApiBuilder
     builder.Services.AddSwaggerGen();
     builder.Services.AddScoped<IWarehouseStockSystemClient, WarehouseStockSystemClient>();
 
+    builder.Services.AddSingleton<IStockCache>(sp =>
+    {
+      var logger = sp.GetRequiredService<ILogger<JsonStockCache>>();
+      return new JsonStockCache("stockCache.json", logger);
+    });
+    builder.Services.AddHostedService<StockSyncService>();
+
     var app = builder.Build();
 
     // Configure the HTTP request pipeline.
@@ -27,21 +34,25 @@ public static class CachedInventoryApiBuilder
 
     app.MapGet(
         "/stock/{productId:int}",
-        async ([FromServices] IWarehouseStockSystemClient client, int productId) => await client.GetStock(productId))
-      .WithName("GetStock")
-      .WithOpenApi();
+        async ([FromServices] IStockCache stockCache, int productId) =>
+    {
+      var stock = await stockCache.GetStockAsync(productId);
+      return Results.Ok(stock);
+    })
+    .WithName("GetStock")
+    .WithOpenApi();
 
     app.MapPost(
         "/stock/retrieve",
-        async ([FromServices] IWarehouseStockSystemClient client, [FromBody] RetrieveStockRequest req) =>
+        async ([FromServices] IStockCache stockCache, [FromBody] RetrieveStockRequest req) =>
         {
-          var stock = await client.GetStock(req.ProductId);
+          var stock = await stockCache.GetStockAsync(req.ProductId);
           if (stock < req.Amount)
           {
             return Results.BadRequest("Not enough stock.");
           }
 
-          await client.UpdateStock(req.ProductId, stock - req.Amount);
+          await stockCache.UpdateStockAsync(req.ProductId, stock - req.Amount);
           return Results.Ok();
         })
       .WithName("RetrieveStock")
@@ -50,14 +61,14 @@ public static class CachedInventoryApiBuilder
 
     app.MapPost(
         "/stock/restock",
-        async ([FromServices] IWarehouseStockSystemClient client, [FromBody] RestockRequest req) =>
+        async ([FromServices] IStockCache stockCache, [FromBody] RestockRequest req) =>
         {
-          var stock = await client.GetStock(req.ProductId);
-          await client.UpdateStock(req.ProductId, req.Amount + stock);
+          var stock = await stockCache.GetStockAsync(req.ProductId);
+          await stockCache.UpdateStockAsync(req.ProductId, stock + req.Amount);
           return Results.Ok();
         })
-      .WithName("Restock")
-      .WithOpenApi();
+        .WithName("Restock")
+        .WithOpenApi();
 
     return app;
   }
